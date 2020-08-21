@@ -25,6 +25,9 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 
@@ -35,7 +38,18 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.Spinner;
 
+import com.google.gson.GsonBuilder;
 import com.koushikdutta.async.future.FutureCallback;
+import com.nextcloud.android.sso.AccountImporter;
+import com.nextcloud.android.sso.api.NextcloudAPI;
+import com.nextcloud.android.sso.exceptions.AccountImportCancelledException;
+import com.nextcloud.android.sso.exceptions.AndroidGetAccountsPermissionNotGranted;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppNotInstalledException;
+import com.nextcloud.android.sso.exceptions.NoCurrentAccountSelectedException;
+import com.nextcloud.android.sso.helper.SingleAccountHelper;
+import com.nextcloud.android.sso.model.SingleSignOnAccount;
+import com.nextcloud.android.sso.ui.UiExceptionManager;
 
 import butterknife.BindView;
 import butterknife.ButterKnife;
@@ -45,6 +59,7 @@ import es.wolfi.passman.API.Vault;
 
 public class LoginActivity extends AppCompatActivity {
     public final static String LOG_TAG = "LoginActivity";
+    private static final String SSO_LOG_TAG = "SSO@LoginActivity";
 
     @BindView(R.id.protocol) Spinner input_protocol;
     @BindView(R.id.host) EditText input_host;
@@ -58,14 +73,46 @@ public class LoginActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_login);
-        ButterKnife.bind(this);
+        try {
+            AccountImporter.pickNewAccount(this);
+            Log.w(SSO_LOG_TAG, "try AccountImporter was successful");
+        } catch (NextcloudFilesAppNotInstalledException e1) {
+            //UiExceptionManager.showDialogForException(this, e1);
+            Log.w(SSO_LOG_TAG, "Nextcloud app is not installed. Cannot choose account");
+            //e1.printStackTrace();
+            setContentView(R.layout.activity_login);
+            ButterKnife.bind(this);
 
-        settings = PreferenceManager.getDefaultSharedPreferences(this);
-        ton = SingleTon.getTon();
+            settings = PreferenceManager.getDefaultSharedPreferences(this);
+            ton = SingleTon.getTon();
 
-        Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
-        setSupportActionBar(toolbar);
+            Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
+            setSupportActionBar(toolbar);
+        } catch (AndroidGetAccountsPermissionNotGranted e2) {
+            AccountImporter.requestAndroidAccountPermissionsAndPickAccount(this);
+        }
+
+        //For testing only
+        /*try {
+            PackageManager pm = getPackageManager();
+            try {
+                for (ApplicationInfo p : pm.getInstalledApplications(0)){
+                    Log.v(SSO_LOG_TAG, p.packageName);
+                }
+                pm.getPackageInfo("com.nextcloud.client", PackageManager.GET_ACTIVITIES);
+            } catch (PackageManager.NameNotFoundException e) {
+                //Log.v(SSO_LOG_TAG, e.getMessage());
+            }
+
+            AccountImporter.pickNewAccount(this);
+            Log.e(SSO_LOG_TAG, "try AccountImporter was successful");
+        } catch (NextcloudFilesAppNotInstalledException e1) {
+            Log.e(SSO_LOG_TAG, "Nextcloud app is not installed. Cannot choose account");
+            e1.printStackTrace();
+
+        } catch (AndroidGetAccountsPermissionNotGranted e2) {
+            AccountImporter.requestAndroidAccountPermissionsAndPickAccount(this);
+        }*/
     }
 
     @OnClick(R.id.next)
@@ -114,5 +161,50 @@ public class LoginActivity extends AppCompatActivity {
         SingleTon.getTon().addCallback(CallbackNames.LOGIN.toString(), cb);
         Intent i = new Intent(c, LoginActivity.class);
         c.startActivity(i);
+    }
+
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        try {
+            AccountImporter.onActivityResult(requestCode, resultCode, data, this, new AccountImporter.IAccountAccessGranted() {
+
+                NextcloudAPI.ApiConnectedListener callback = new NextcloudAPI.ApiConnectedListener() {
+                    @Override
+                    public void onConnected() {
+                        // ignore this one… see 5)
+                    }
+
+                    @Override
+                    public void onError(Exception ex) {
+                        // TODO handle errors
+                    }
+                };
+
+                @Override
+                public void accountAccessGranted(SingleSignOnAccount account) {
+                    Context l_context = getApplicationContext();
+
+                    // As this library supports multiple accounts we created some helper methods if you only want to use one.
+                    // The following line stores the selected account as the "default" account which can be queried by using
+                    // the SingleAccountHelper.getCurrentSingleSignOnAccount(context) method
+                    SingleAccountHelper.setCurrentAccount(l_context, account.name);
+
+                    // Get the "default" account
+                    SingleSignOnAccount ssoAccount = null;
+                    try {
+                        ssoAccount = SingleAccountHelper.getCurrentSingleSignOnAccount(l_context);
+                    } catch (NextcloudFilesAppAccountNotFoundException | NoCurrentAccountSelectedException e) {
+                        UiExceptionManager.showDialogForException(l_context, e);
+                    }
+
+                    NextcloudAPI nextcloudAPI = new NextcloudAPI(l_context, ssoAccount, new GsonBuilder().create(), callback);
+
+                    // TODO ... (see code in section 4 and below)
+                }
+            });
+        } catch (AccountImportCancelledException e) {
+            e.printStackTrace();
+        }
     }
 }
